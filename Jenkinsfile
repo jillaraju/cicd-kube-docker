@@ -2,7 +2,7 @@ pipeline {
 
     agent any
 
-	tools {
+    tools {
         maven "maven3"
     }
 
@@ -72,19 +72,23 @@ pipeline {
             }
         }
 
+        // 🔥 FIX STARTS HERE
+
         stage('Build App Image') {
+          agent { label 'KOPS' }   // 👈 Force Docker node
           steps {
             script {
-              dockerImage = docker.build registry + ":V$BUILD_NUMBER"
+              dockerImage = docker.build registry + ":V${BUILD_NUMBER}"
             }
           }
         }
 
         stage('Upload Image'){
+          agent { label 'KOPS' }   // 👈 Force Docker node
           steps{
             script {
               docker.withRegistry('', registryCredential) {
-                dockerImage.push("V$BUILD_NUMBER")
+                dockerImage.push("V${BUILD_NUMBER}")
                 dockerImage.push('latest')
               }
             }
@@ -92,18 +96,19 @@ pipeline {
         }
 
         stage('Remove Unused docker image') {
+          agent { label 'KOPS' }   // 👈 Force Docker node
           steps{
-            sh "docker rmi $registry:V$BUILD_NUMBER"
+            sh "docker rmi ${registry}:V${BUILD_NUMBER}"
           }
         }
 
+        // 🔥 FIX ENDS HERE
+
         stage('Kubernetes Deploy') {
-          agent {label 'KOPS'}
-            steps {
-              sh "helm upgrade --install --force vprofile-stack helm/vprofilecharts --set appimage=${registry}:V${BUILD_NUMBER} --namespace prod"
-            }
+          agent { label 'KOPS' }
+          steps {
+            sh "helm upgrade --install --force vprofile-stack helm/vprofilecharts --set appimage=${registry}:V${BUILD_NUMBER} --namespace prod --create-namespace"
+          }
         }
     }
-
-
 }
