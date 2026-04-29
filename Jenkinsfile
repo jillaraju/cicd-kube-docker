@@ -75,7 +75,7 @@ pipeline {
         // 🔥 FIX STARTS HERE
 
         stage('Build App Image') {
-          agent { label 'docker-node' }   // 👈 Force Docker node
+          agent { label 'KOPS' }   // 👈 Force Docker node
           steps {
             script {
               dockerImage = docker.build registry + ":V${BUILD_NUMBER}"
