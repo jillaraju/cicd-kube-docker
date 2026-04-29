@@ -1,6 +1,6 @@
 pipeline {
 
-    agent none   // 👈 control execution per stage
+    agent { label 'KOPS' }   // 👈 FIX: same node for all stages
 
     tools {
         maven "maven3"
@@ -13,9 +13,7 @@ pipeline {
 
     stages {
 
-        // 🔹 Build + Test (optimized)
         stage('Build & Test') {
-            agent any
             steps {
                 sh 'mvn clean verify'
             }
@@ -27,16 +25,13 @@ pipeline {
             }
         }
 
-        // 🔹 Code Analysis
         stage('Code Analysis - Checkstyle') {
-            agent any
             steps {
                 sh 'mvn checkstyle:checkstyle'
             }
         }
 
         stage('Code Analysis - SonarQube') {
-            agent any
             environment {
                 scannerHome = tool 'mysonarscanner4'
             }
@@ -60,22 +55,19 @@ pipeline {
             }
         }
 
-        // 🔥 Debug (optional but useful)
+        // 🔍 Debug (optional)
         stage('Check WAR File') {
-            agent { label 'KOPS' }
             steps {
                 sh '''
                 echo "Workspace:"
                 pwd
-                echo "Checking target folder:"
+                echo "Listing target folder:"
                 ls -l target/
                 '''
             }
         }
 
-        // 🔹 Docker Build
         stage('Build App Image') {
-            agent { label 'KOPS' }   // 👈 Docker installed here
             steps {
                 script {
                     dockerImage = docker.build("${registry}:V${BUILD_NUMBER}")
@@ -83,9 +75,7 @@ pipeline {
             }
         }
 
-        // 🔹 Push Image
         stage('Upload Image') {
-            agent { label 'KOPS' }
             steps {
                 script {
                     docker.withRegistry('', registryCredential) {
@@ -96,17 +86,13 @@ pipeline {
             }
         }
 
-        // 🔹 Cleanup
         stage('Remove Local Image') {
-            agent { label 'KOPS' }
             steps {
                 sh "docker rmi ${registry}:V${BUILD_NUMBER} || true"
             }
         }
 
-        // 🔹 Deploy
         stage('Kubernetes Deploy') {
-            agent { label 'KOPS' }
             steps {
                 sh """
                 helm upgrade --install vprofile-stack helm/vprofilecharts \
