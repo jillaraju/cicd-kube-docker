@@ -1,6 +1,6 @@
 pipeline {
 
-    agent any
+    agent none   // 👈 control execution per stage
 
     tools {
         maven "maven3"
@@ -11,59 +11,47 @@ pipeline {
         registryCredential = 'dockerhub'
     }
 
-    stages{
+    stages {
 
-        stage('BUILD'){
+        // 🔹 Build + Test (optimized)
+        stage('Build & Test') {
+            agent any
             steps {
-                sh 'mvn clean install -DskipTests'
+                sh 'mvn clean verify'
             }
             post {
                 success {
-                    echo 'Now Archiving...'
+                    echo 'Archiving WAR file...'
                     archiveArtifacts artifacts: '**/target/*.war'
                 }
             }
         }
 
-        stage('UNIT TEST'){
-            steps {
-                sh 'mvn test'
-            }
-        }
-
-        stage('INTEGRATION TEST'){
-            steps {
-                sh 'mvn verify -DskipUnitTests'
-            }
-        }
-
-        stage ('CODE ANALYSIS WITH CHECKSTYLE'){
+        // 🔹 Code Analysis
+        stage('Code Analysis - Checkstyle') {
+            agent any
             steps {
                 sh 'mvn checkstyle:checkstyle'
             }
-            post {
-                success {
-                    echo 'Generated Analysis Result'
-                }
-            }
         }
 
-        stage('CODE ANALYSIS with SONARQUBE') {
-
+        stage('Code Analysis - SonarQube') {
+            agent any
             environment {
                 scannerHome = tool 'mysonarscanner4'
             }
-
             steps {
                 withSonarQubeEnv('sonar-pro') {
-                    sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
-                   -Dsonar.projectName=vprofile-repo \
-                   -Dsonar.projectVersion=1.0 \
-                   -Dsonar.sources=src/ \
-                   -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
-                   -Dsonar.junit.reportsPath=target/surefire-reports/ \
-                   -Dsonar.jacoco.reportsPath=target/jacoco.exec \
-                   -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml'''
+                    sh """
+                    ${scannerHome}/bin/sonar-scanner \
+                    -Dsonar.projectKey=vprofile \
+                    -Dsonar.projectName=vprofile-repo \
+                    -Dsonar.projectVersion=1.0 \
+                    -Dsonar.sources=src/ \
+                    -Dsonar.junit.reportsPath=target/surefire-reports/ \
+                    -Dsonar.jacoco.reportsPath=target/jacoco.exec \
+                    -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml
+                    """
                 }
 
                 timeout(time: 10, unit: 'MINUTES') {
@@ -72,43 +60,60 @@ pipeline {
             }
         }
 
-        // 🔥 FIX STARTS HERE
+        // 🔥 Debug (optional but useful)
+        stage('Check WAR File') {
+            agent { label 'KOPS' }
+            steps {
+                sh '''
+                echo "Workspace:"
+                pwd
+                echo "Checking target folder:"
+                ls -l target/
+                '''
+            }
+        }
 
+        // 🔹 Docker Build
         stage('Build App Image') {
-          agent { label 'KOPS' }   // 👈 Force Docker node
-          steps {
-            script {
-              dockerImage = docker.build registry + ":V${BUILD_NUMBER}"
+            agent { label 'KOPS' }   // 👈 Docker installed here
+            steps {
+                script {
+                    dockerImage = docker.build("${registry}:V${BUILD_NUMBER}")
+                }
             }
-          }
         }
 
-        stage('Upload Image'){
-          agent { label 'KOPS' }   // 👈 Force Docker node
-          steps{
-            script {
-              docker.withRegistry('', registryCredential) {
-                dockerImage.push("V${BUILD_NUMBER}")
-                dockerImage.push('latest')
-              }
+        // 🔹 Push Image
+        stage('Upload Image') {
+            agent { label 'KOPS' }
+            steps {
+                script {
+                    docker.withRegistry('', registryCredential) {
+                        dockerImage.push("V${BUILD_NUMBER}")
+                        dockerImage.push('latest')
+                    }
+                }
             }
-          }
         }
 
-        stage('Remove Unused docker image') {
-          agent { label 'KOPS' }   // 👈 Force Docker node
-          steps{
-            sh "docker rmi ${registry}:V${BUILD_NUMBER}"
-          }
+        // 🔹 Cleanup
+        stage('Remove Local Image') {
+            agent { label 'KOPS' }
+            steps {
+                sh "docker rmi ${registry}:V${BUILD_NUMBER} || true"
+            }
         }
 
-        // 🔥 FIX ENDS HERE
-
+        // 🔹 Deploy
         stage('Kubernetes Deploy') {
-          agent { label 'KOPS' }
-          steps {
-            sh "helm upgrade --install --force vprofile-stack helm/vprofilecharts --set appimage=${registry}:V${BUILD_NUMBER} --namespace prod --create-namespace"
-          }
+            agent { label 'KOPS' }
+            steps {
+                sh """
+                helm upgrade --install vprofile-stack helm/vprofilecharts \
+                --set appimage=${registry}:V${BUILD_NUMBER} \
+                --namespace prod --create-namespace
+                """
+            }
         }
     }
 }
