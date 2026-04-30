@@ -1,8 +1,8 @@
 pipeline {
 
-    agent { label 'KOPS' }   // 👈 FIX: same node for all stages
+    agent any
 
-    tools {
+	tools {
         maven "maven3"
     }
 
@@ -11,42 +11,59 @@ pipeline {
         registryCredential = 'dockerhub'
     }
 
-    stages {
+    stages{
 
-        stage('Build & Test') {
+        stage('BUILD'){
             steps {
-                sh 'mvn clean verify'
+                sh 'mvn clean install -DskipTests'
             }
             post {
                 success {
-                    echo 'Archiving WAR file...'
+                    echo 'Now Archiving...'
                     archiveArtifacts artifacts: '**/target/*.war'
                 }
             }
         }
 
-        stage('Code Analysis - Checkstyle') {
+        stage('UNIT TEST'){
             steps {
-                sh 'mvn checkstyle:checkstyle'
+                sh 'mvn test'
             }
         }
 
-        stage('Code Analysis - SonarQube') {
+        stage('INTEGRATION TEST'){
+            steps {
+                sh 'mvn verify -DskipUnitTests'
+            }
+        }
+
+        stage ('CODE ANALYSIS WITH CHECKSTYLE'){
+            steps {
+                sh 'mvn checkstyle:checkstyle'
+            }
+            post {
+                success {
+                    echo 'Generated Analysis Result'
+                }
+            }
+        }
+
+        stage('CODE ANALYSIS with SONARQUBE') {
+
             environment {
                 scannerHome = tool 'mysonarscanner4'
             }
+
             steps {
                 withSonarQubeEnv('sonar-pro') {
-                    sh """
-                    ${scannerHome}/bin/sonar-scanner \
-                    -Dsonar.projectKey=vprofile \
-                    -Dsonar.projectName=vprofile-repo \
-                    -Dsonar.projectVersion=1.0 \
-                    -Dsonar.sources=src/ \
-                    -Dsonar.junit.reportsPath=target/surefire-reports/ \
-                    -Dsonar.jacoco.reportsPath=target/jacoco.exec \
-                    -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml
-                    """
+                    sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
+                   -Dsonar.projectName=vprofile-repo \
+                   -Dsonar.projectVersion=1.0 \
+                   -Dsonar.sources=src/ \
+                   -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
+                   -Dsonar.junit.reportsPath=target/surefire-reports/ \
+                   -Dsonar.jacoco.reportsPath=target/jacoco.exec \
+                   -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml'''
                 }
 
                 timeout(time: 10, unit: 'MINUTES') {
@@ -55,51 +72,38 @@ pipeline {
             }
         }
 
-        // 🔍 Debug (optional)
-        stage('Check WAR File') {
-            steps {
-                sh '''
-                echo "Workspace:"
-                pwd
-                echo "Listing target folder:"
-                ls -l target/
-                '''
-            }
-        }
-
         stage('Build App Image') {
-            steps {
-                script {
-                    dockerImage = docker.build("${registry}:V${BUILD_NUMBER}")
-                }
+          steps {
+            script {
+              dockerImage = docker.build registry + ":V$BUILD_NUMBER"
             }
+          }
         }
 
-        stage('Upload Image') {
-            steps {
-                script {
-                    docker.withRegistry('', registryCredential) {
-                        dockerImage.push("V${BUILD_NUMBER}")
-                        dockerImage.push('latest')
-                    }
-                }
+        stage('Upload Image'){
+          steps{
+            script {
+              docker.withRegistry('', registryCredential) {
+                dockerImage.push("V$BUILD_NUMBER")
+                dockerImage.push('latest')
+              }
             }
+          }
         }
 
-        stage('Remove Local Image') {
-            steps {
-                sh "docker rmi ${registry}:V${BUILD_NUMBER} || true"
-            }
+        stage('Remove Unused docker image') {
+          steps{
+            sh "docker rmi $registry:V$BUILD_NUMBER"
+          }
         }
 
         stage('Kubernetes Deploy') {
+          agent {label 'KOPS'}
             steps {
-                sh """
-                helm upgrade --install vprofile-stack helm/vprofilecharts \
-                --set appimage=${registry}:V${BUILD_NUMBER} \
-                --namespace prod --create-namespace
-                """
+              sh "helm upgrade --install --force vprofile-stack helm/vprofilecharts --set appimage=${registry}:V${BUILD_NUMBER} --namespace prod"
             }
         }
     }
+
+
 }
